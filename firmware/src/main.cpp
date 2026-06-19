@@ -38,8 +38,18 @@ bool isProtectedBlock(int block) {
     return block == 0 || block % 4 == 3;
 }
 
-bool selectCard() {
-    return rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial();
+bool waitForCard() {
+    while (true) {
+        byte atqa[2];
+        byte atqaLength = sizeof(atqa);
+        MFRC522::StatusCode status = rfid.PICC_WakeupA(atqa, &atqaLength);
+
+        if (status == MFRC522::STATUS_OK && rfid.PICC_Select(&(rfid.uid)) == MFRC522::STATUS_OK) {
+            return true;
+        }
+
+        delay(50);
+    }
 }
 
 void finishCardSession() {
@@ -65,10 +75,7 @@ bool authenticate(int block, const byte* keyBytes) {
 }
 
 void readBlock(int block, const byte* key) {
-    if (!selectCard()) {
-        Serial.println(F("ERR NO_CARD"));
-        return;
-    }
+    waitForCard();
     if (!authenticate(block, key)) {
         return;
     }
@@ -94,10 +101,7 @@ void readBlock(int block, const byte* key) {
 }
 
 void writeBlock(int block, const byte* key, byte* data) {
-    if (!selectCard()) {
-        Serial.println(F("ERR NO_CARD"));
-        return;
-    }
+    waitForCard();
     if (!authenticate(block, key)) {
         return;
     }

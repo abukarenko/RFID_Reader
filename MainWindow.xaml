@@ -30,7 +30,7 @@
                     <ColumnDefinition Width="110" />
                 </Grid.ColumnDefinitions>
                 <TextBlock VerticalAlignment="Center" Text="Serial port" />
-                <ComboBox x:Name="PortComboBox" Grid.Column="2" Height="30" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="PortComboBox" Grid.Column="2" Height="30" VerticalContentAlignment="Center" SelectionChanged="PortComboBox_SelectionChanged" />
                 <Button Grid.Column="4" Width="34" Height="30" Click="RefreshPortsButton_Click" ToolTip="Refresh port list" Content="Refresh" />
                 <Button x:Name="ConnectButton" Grid.Column="6" Height="30" Click="ConnectButton_Click" Content="Connect" />
             </Grid>
@@ -71,12 +71,12 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBlock VerticalAlignment="Center" Text="Block" />
-                <TextBox x:Name="BlockTextBox" Grid.Column="2" Height="30" Text="4" VerticalContentAlignment="Center" />
+                <TextBox x:Name="BlockTextBox" Grid.Column="2" Height="30" Text="4" VerticalContentAlignment="Center" LostFocus="SettingsInput_LostFocus" />
                 <TextBlock Grid.Column="4" VerticalAlignment="Center" Text="Key A" />
-                <TextBox x:Name="KeyTextBox" Grid.Column="6" Height="30" Text="FFFFFFFFFFFF" VerticalContentAlignment="Center" />
+                <TextBox x:Name="KeyTextBox" Grid.Column="6" Height="30" Text="FFFFFFFFFFFF" VerticalContentAlignment="Center" LostFocus="SettingsInput_LostFocus" />
 
                 <TextBlock Grid.Row="2" VerticalAlignment="Center" Text="Data (HEX)" />
-                <TextBox x:Name="DataTextBox" Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="6" Height="30" VerticalContentAlignment="Center" />
+                <TextBox x:Name="DataTextBox" Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="6" Height="30" VerticalContentAlignment="Center" LostFocus="SettingsInput_LostFocus" />
 
                 <TextBlock Grid.Row="4" Grid.ColumnSpan="8" Margin="0,0,0,6" Text="Response" />
                 <TextBox x:Name="ResponseTextBox" Grid.Row="4" Grid.ColumnSpan="8" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />

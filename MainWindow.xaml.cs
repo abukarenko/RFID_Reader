@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.IO.Ports;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -8,25 +9,41 @@ namespace RFIDReader.Desktop;
 public partial class MainWindow : Window
 {
     private const int BaudRate = 115200;
+    private static readonly string SettingsPath = Path.Combine(AppContext.BaseDirectory, "settings.ini");
+
+    private readonly ReaderSettings _settings = ReaderSettings.Load(SettingsPath);
+    private readonly SemaphoreSlim _commandLock = new(1, 1);
     private SerialPort? _serialPort;
+    private bool _isClosing;
 
     public MainWindow()
     {
         InitializeComponent();
-        RefreshPorts();
+
+        BlockTextBox.Text = _settings.Block;
+        KeyTextBox.Text = _settings.Key;
+        DataTextBox.Text = _settings.Data;
+        RefreshPorts(_settings.Port);
+        SaveSettings();
     }
 
     protected override void OnClosed(EventArgs e)
     {
+        _isClosing = true;
+        SaveSettings();
         Disconnect();
         base.OnClosed(e);
     }
 
     private void RefreshPortsButton_Click(object sender, RoutedEventArgs e) => RefreshPorts();
 
-    private void RefreshPorts()
+    private void PortComboBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => SaveSettings();
+
+    private void SettingsInput_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
+
+    private void RefreshPorts(string? preferredPort = null)
     {
-        var selectedPort = PortComboBox.SelectedItem as string;
+        var selectedPort = preferredPort ?? PortComboBox.SelectedItem as string ?? _settings.Port;
         var ports = SerialPort.GetPortNames().OrderBy(port => port).ToArray();
 
         PortComboBox.ItemsSource = ports;
@@ -34,7 +51,7 @@ public partial class MainWindow : Window
         StatusTextBlock.Text = ports.Length == 0 ? "No serial ports found." : "Select the Arduino port and connect.";
     }
 
-    private void ConnectButton_Click(object sender, RoutedEventArgs e)
+    private async void ConnectButton_Click(object sender, RoutedEventArgs e)
     {
         if (_serialPort?.IsOpen == true)
         {
@@ -50,17 +67,28 @@ public partial class MainWindow : Window
 
         try
         {
+            ConnectButton.IsEnabled = false;
             _serialPort = new SerialPort(portName, BaudRate)
             {
                 NewLine = "\n",
-                ReadTimeout = 3000,
+                ReadTimeout = Timeout.Infinite,
                 WriteTimeout = 3000
             };
             _serialPort.Open();
 
+            StatusTextBlock.Text = "Waiting for Arduino to start...";
+            await Task.Delay(1200);
+
+            if (_serialPort?.IsOpen != true)
+            {
+                return;
+            }
+
+            _serialPort.DiscardInBuffer();
             ConnectButton.Content = "Disconnect";
             ReadButton.IsEnabled = true;
             WriteButton.IsEnabled = true;
+            SaveSettings();
             StatusTextBlock.Text = $"Connected to {portName} at {BaudRate} baud.";
         }
         catch (Exception ex)
@@ -68,17 +96,24 @@ public partial class MainWindow : Window
             Disconnect();
             ShowError($"Could not connect: {ex.Message}");
         }
-    }
-
-    private void ReadButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (TryGetBlockAndKey(out var block, out var key))
+        finally
         {
-            SendCommand($"READ {block} {key}");
+            if (_serialPort?.IsOpen == true)
+            {
+                ConnectButton.IsEnabled = true;
+            }
         }
     }
 
-    private void WriteButton_Click(object sender, RoutedEventArgs e)
+    private async void ReadButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryGetBlockAndKey(out var block, out var key))
+        {
+            await SendCommandAsync($"READ {block} {key}");
+        }
+    }
+
+    private async void WriteButton_Click(object sender, RoutedEventArgs e)
     {
         if (!TryGetBlockAndKey(out var block, out var key))
         {
@@ -92,7 +127,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        SendCommand($"WRITE {block} {key} {data}");
+        DataTextBox.Text = data;
+        SaveSettings();
+        await SendCommandAsync($"WRITE {block} {key} {data}");
     }
 
     private bool TryGetBlockAndKey(out int block, out string key)
@@ -118,22 +155,44 @@ public partial class MainWindow : Window
             return false;
         }
 
+        BlockTextBox.Text = block.ToString(CultureInfo.InvariantCulture);
+        KeyTextBox.Text = key;
+        SaveSettings();
         return true;
     }
 
-    private void SendCommand(string command)
+    private async Task SendCommandAsync(string command)
     {
-        if (_serialPort?.IsOpen != true)
+        var port = _serialPort;
+        if (port?.IsOpen != true)
         {
             ShowError("Connect to the Arduino first.");
             return;
         }
 
+        if (!await _commandLock.WaitAsync(0))
+        {
+            return;
+        }
+
         try
         {
-            _serialPort.DiscardInBuffer();
-            _serialPort.WriteLine(command);
-            var response = _serialPort.ReadLine().Trim();
+            ReadButton.IsEnabled = false;
+            WriteButton.IsEnabled = false;
+            ResponseTextBox.Text = "Waiting for a card...";
+            StatusTextBlock.Text = "Waiting for a card. You can disconnect to cancel.";
+
+            var response = await Task.Run(() =>
+            {
+                port.DiscardInBuffer();
+                port.WriteLine(command);
+                return port.ReadLine().Trim();
+            });
+
+            if (!ReferenceEquals(port, _serialPort))
+            {
+                return;
+            }
 
             ResponseTextBox.Text = response;
             StatusTextBlock.Text = response.StartsWith("OK", StringComparison.Ordinal) ? "Command completed." : "The reader returned an error.";
@@ -145,36 +204,58 @@ public partial class MainWindow : Window
                 {
                     UidTextBox.Text = parts[2];
                     DataTextBox.Text = parts[4];
+                    SaveSettings();
                 }
             }
         }
-        catch (TimeoutException)
+        catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or IOException)
         {
-            ShowError("The reader did not answer. Place a card on the RC522 and try again.");
+            if (ReferenceEquals(port, _serialPort) && !_isClosing)
+            {
+                ShowError($"Serial communication failed: {ex.Message}");
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            ShowError($"Serial communication failed: {ex.Message}");
+            if (ReferenceEquals(port, _serialPort) && port.IsOpen)
+            {
+                ReadButton.IsEnabled = true;
+                WriteButton.IsEnabled = true;
+            }
+
+            _commandLock.Release();
         }
     }
 
     private void Disconnect()
     {
-        if (_serialPort is not null)
+        var port = _serialPort;
+        _serialPort = null;
+
+        if (port is not null)
         {
-            if (_serialPort.IsOpen)
+            if (port.IsOpen)
             {
-                _serialPort.Close();
+                port.Close();
             }
 
-            _serialPort.Dispose();
-            _serialPort = null;
+            port.Dispose();
         }
 
+        ConnectButton.IsEnabled = true;
         ConnectButton.Content = "Connect";
         ReadButton.IsEnabled = false;
         WriteButton.IsEnabled = false;
         StatusTextBlock.Text = "Disconnected.";
+    }
+
+    private void SaveSettings()
+    {
+        _settings.Port = PortComboBox?.SelectedItem as string ?? _settings.Port;
+        _settings.Block = BlockTextBox?.Text ?? _settings.Block;
+        _settings.Key = KeyTextBox is null ? _settings.Key : NormalizeHex(KeyTextBox.Text);
+        _settings.Data = DataTextBox is null ? _settings.Data : NormalizeHex(DataTextBox.Text);
+        _settings.Save(SettingsPath);
     }
 
     private void ShowError(string message)
